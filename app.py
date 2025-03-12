@@ -11,11 +11,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.file_handler import FileHandler
 from modules.llm_agent import OllamaAgent
 from modules.visualizer import Visualizer
+from modules.basic_query_handler import BasicQueryHandler
 
 # Initialize modules
 file_handler = FileHandler()
 llm_agent = OllamaAgent()
 visualizer = Visualizer()
+basic_handler = BasicQueryHandler()  # Fallback handler
 
 async def process_query(query, file_state):
     """Process a user query about the data"""
@@ -28,13 +30,61 @@ async def process_query(query, file_state):
     dataframe = file_state["dataframe"]
     file_info = file_state["file_info"]
     
-    # Process the query using the LLM agent
-    answer, viz_info = await llm_agent.answer_query(query, dataframe, file_info)
+    # Try to process with LLM agent first
+    try:
+        answer, viz_info = await llm_agent.answer_query(query, dataframe, file_info)
+        
+        # If we got an error message from the LLM agent, fall back to basic handler
+        if answer.startswith("Error") or answer.startswith("The request timed out"):
+            print(f"LLM failed with message: {answer}. Falling back to basic handler.")
+            answer, viz_info = basic_handler.process_query(query, dataframe, file_info)
+    except Exception as e:
+        # On exception, fall back to basic handler
+        print(f"LLM agent exception: {str(e)}. Falling back to basic handler.")
+        answer, viz_info = basic_handler.process_query(query, dataframe, file_info)
     
     # Create visualization if needed
     plot = None
     if viz_info:
-        plot = visualizer.create_visualization_from_info(dataframe, viz_info)
+        try:
+            print(f"Creating visualization with info: {viz_info}")
+            viz_result = visualizer.create_visualization(
+                data=dataframe,
+                viz_type=viz_info.get("type", "bar"),
+                x_column=viz_info.get("x_column"),
+                y_column=viz_info.get("y_column"),
+                color_by=viz_info.get("color_by"),
+                title=viz_info.get("title", "Data Visualization")
+            )
+            
+            # Handle visualization result
+            if viz_result:
+                if "error" in viz_result:
+                    print(f"Visualization error: {viz_result['error']}")
+                    if "details" in viz_result:
+                        print(f"Details: {viz_result['details']}")
+                    
+                    # If we have a fallback figure, use it
+                    if "figure" in viz_result:
+                        plot = viz_result["figure"]
+                        answer += "\n\nNote: There was an issue with the visualization, but I'm showing a simplified version."
+                    else:
+                        answer += f"\n\nNote: I couldn't create a visualization: {viz_result['error']}"
+                elif "figure" in viz_result:
+                    plot = viz_result["figure"]
+                    if "warning" in viz_result:
+                        answer += f"\n\nNote: {viz_result['warning']}"
+                else:
+                    print("Visualization returned unexpected format")
+                    answer += "\n\nNote: I couldn't create a visualization due to an unexpected result format."
+            else:
+                print("Visualization creation returned None")
+                answer += "\n\nNote: I couldn't create a visualization for this query."
+        except Exception as e:
+            import traceback
+            print(f"Visualization error: {str(e)}")
+            traceback.print_exc()
+            answer += f"\n\nNote: I tried to create a visualization but encountered an error: {str(e)}"
     
     return answer, plot
 
@@ -50,6 +100,14 @@ def upload_file(file):
     
     dataframe = file_handler.get_dataframe()
     file_info = file_handler.get_file_info()
+    
+    # Debug information
+    print("=" * 50)
+    print(f"CSV File loaded: {file_info['filename']}")
+    print(f"Columns: {list(dataframe.columns)}")
+    print(f"Data types: {dataframe.dtypes}")
+    print(f"Sample data:\n{dataframe.head(3)}")
+    print("=" * 50)
     
     # Return the dataframe, info, and a success message
     return {

@@ -3,7 +3,7 @@ import httpx
 import pandas as pd
 from typing import Dict, Any, List, Optional, Union, Tuple
 from pydantic import BaseModel, Field
-import requests
+import asyncio
 
 class DataAnalysisQuery(BaseModel):
     """Model representing a data analysis query"""
@@ -43,6 +43,9 @@ class OllamaAgent:
     def __init__(self):
         self.model_name = "mistral-local-ultrafast"
         self.api_url = "http://localhost:11434/api/generate"
+        self.max_retries = 3
+        self.timeout = 120  # Increased timeout to 120 seconds
+        self.client = httpx.AsyncClient(timeout=self.timeout)
         
     def _generate_system_prompt(self, df_info: Dict[str, Any]) -> str:
         """Generate a system prompt with context about the dataframe."""
@@ -62,39 +65,73 @@ Keep answers concise and focused on the data."""
     def _format_query(self, user_query: str, df_info: Dict[str, Any]) -> str:
         """Format the complete query with system prompt and user question."""
         system_prompt = self._generate_system_prompt(df_info)
+        # Keep the prompt as short as possible to reduce memory usage
         return f"{system_prompt}\n\nQuestion: {user_query}\n\nRespond with JSON: {{\n'answer': 'brief answer',\n'visualization_needed': boolean,\n'viz_type': 'type if needed',\n'viz_columns': ['columns'],\n'viz_title': 'title',\n'viz_params': {{}}\n}}"
+
+    async def _make_request_with_retry(self, formatted_query: str) -> Dict[str, Any]:
+        """Make request to Ollama with retry logic"""
+        for attempt in range(self.max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    # Use minimal memory settings
+                    response = await client.post(
+                        self.api_url,
+                        json={
+                            "model": self.model_name,
+                            "prompt": formatted_query,
+                            "stream": False,
+                            "options": {
+                                "temperature": 0.5,
+                                "num_thread": 1,        # Minimum threads
+                                "num_gpu": 0,           # Disable GPU
+                                "num_ctx": 512,         # Minimum context
+                                "num_batch": 32,        # Very small batch size
+                                "repeat_penalty": 1.1,
+                                "top_k": 20,            # Reduced
+                                "top_p": 0.9,
+                                "numa": False,          # Fixed - was lowercase 'false' causing Python errors
+                                "f16_kv": True,         # Fixed - was lowercase 'true' causing Python errors
+                                "low_vram": True        # Fixed - was lowercase 'true' causing Python errors
+                            }
+                        }
+                    )
+                    
+                    if response.status_code == 500:
+                        print(f"Server error on attempt {attempt + 1}, response: {response.text}")
+                        if attempt == self.max_retries - 1:
+                            raise httpx.RequestError(f"Server error: {response.text}")
+                        await asyncio.sleep(2)  # Longer delay for 500 errors
+                        continue
+                        
+                    response.raise_for_status()
+                    return response.json()
+                    
+            except httpx.TimeoutException:
+                print(f"Timeout on attempt {attempt + 1}")
+                if attempt == self.max_retries - 1:
+                    raise
+                await asyncio.sleep(2)  # Increased delay between retries
+                continue
+            except httpx.RequestError as e:
+                print(f"Request error on attempt {attempt + 1}: {str(e)}")
+                if attempt == self.max_retries - 1:
+                    raise
+                await asyncio.sleep(2)  # Increased delay between retries
+                continue
+        raise httpx.RequestError("Max retries exceeded")
 
     async def answer_query(self, query: str, df: pd.DataFrame, df_info: Dict[str, Any]) -> Tuple[str, Optional[Dict[str, Any]]]:
         """Process a user query and return an answer with optional visualization info."""
         try:
             formatted_query = self._format_query(query, df_info)
             
-            # Send request to Ollama with optimized parameters
-            response = requests.post(
-                self.api_url,
-                json={
-                    "model": self.model_name,
-                    "prompt": formatted_query,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.7,
-                        "num_thread": 4,
-                        "num_gpu": 1,
-                        "num_ctx": 512,
-                        "num_batch": 512,
-                        "repeat_penalty": 1.1,
-                        "top_k": 40,
-                        "top_p": 0.95
-                    }
-                },
-                timeout=30  # Add timeout to prevent hanging
-            )
+            try:
+                llm_response = await self._make_request_with_retry(formatted_query)
+            except httpx.TimeoutException:
+                return "The request timed out. The server might be busy. Please try again in a moment.", None
+            except httpx.RequestError as e:
+                return f"Error connecting to the language model server: {str(e)}. Please ensure the server is running.", None
             
-            if response.status_code != 200:
-                return "Sorry, I encountered an error processing your question.", None
-                
-            # Parse the response
-            llm_response = response.json()
             response_text = llm_response['response']
             
             # Extract JSON from response
@@ -114,16 +151,16 @@ Keep answers concise and focused on the data."""
             # Return the answer and visualization info if needed
             viz_info = None
             if parsed_response.visualization_needed and parsed_response.viz_type:
+                # Convert from old format (columns) to new format (x_column, y_column)
                 viz_info = {
                     "type": parsed_response.viz_type,
-                    "columns": parsed_response.viz_columns,
-                    "title": parsed_response.viz_title,
-                    "params": parsed_response.viz_params or {}
+                    "x_column": parsed_response.viz_columns[0] if parsed_response.viz_columns else None,
+                    "y_column": parsed_response.viz_columns[1] if len(parsed_response.viz_columns) > 1 else None,
+                    "color_by": parsed_response.viz_params.get("color_column") if parsed_response.viz_params else None,
+                    "title": parsed_response.viz_title
                 }
                 
             return parsed_response.answer, viz_info
             
-        except requests.exceptions.Timeout:
-            return "The request timed out. Please try again.", None
         except Exception as e:
             return f"Error processing query: {str(e)}", None

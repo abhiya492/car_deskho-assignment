@@ -33,24 +33,41 @@ class FileHandler:
                 return False, "File size exceeds 25MB limit"
             
             # Try to read the CSV file
-            self._dataframe = pd.read_csv(file.name)
+            try:
+                self._dataframe = pd.read_csv(file.name)
+                print(f"CSV read successfully with {len(self._dataframe)} rows and {len(self._dataframe.columns)} columns")
+            except pd.errors.ParserError:
+                # Try with different encoding options
+                try:
+                    self._dataframe = pd.read_csv(file.name, encoding='latin1')
+                    print("CSV read with latin1 encoding")
+                except:
+                    try:
+                        self._dataframe = pd.read_csv(file.name, encoding='utf-8-sig')
+                        print("CSV read with utf-8-sig encoding")
+                    except:
+                        return False, "Unable to parse CSV file with multiple encoding attempts"
+            
+            # Clean column names - trim whitespace and convert to string
+            self._dataframe.columns = [str(col).strip() for col in self._dataframe.columns]
             
             # Store file information
             self._file_info = {
                 "filename": os.path.basename(file.name),
                 "rows": len(self._dataframe),
                 "columns": len(self._dataframe.columns),
+                "column_names": list(self._dataframe.columns),
                 "column_types": self._dataframe.dtypes.to_dict(),
                 "numeric_columns": self._dataframe.select_dtypes(include=['int64', 'float64']).columns.tolist(),
                 "categorical_columns": self._dataframe.select_dtypes(include=['object', 'category']).columns.tolist()
             }
             
+            print(f"Processed columns: {self._file_info['column_names']}")
+            
             return True, "File loaded successfully"
             
         except pd.errors.EmptyDataError:
             return False, "The file is empty"
-        except pd.errors.ParserError:
-            return False, "Error parsing CSV file. Please check the file format"
         except Exception as e:
             return False, f"Error loading file: {str(e)}"
     
