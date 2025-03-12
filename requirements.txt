@@ -1,0 +1,13 @@
+gradio==4.26.0
+pandas==2.2.3
+numpy>=1.26.4
+matplotlib>=3.8.1
+plotly>=5.18.0
+pydantic>=2.5.2
+httpx>=0.25.0
+pydantic-ai>=0.0.36
+seaborn>=0.13.2
+scikit-learn>=1.4.1
+ollama>=0.1.6
+python-dotenv>=1.0.1
+requests>=2.32.3
