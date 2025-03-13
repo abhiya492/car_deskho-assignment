@@ -23,7 +23,7 @@ A Gradio-based application that allows users to upload CSV files, ask questions 
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/yourusername/csv-qa-app.git
+git clone https://github.com/abhiya492/csv-qa-app.git
 cd csv-qa-app
 ```
 
