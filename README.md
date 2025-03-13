@@ -27,7 +27,7 @@ git clone https://github.com/abhiya492/csv-qa-app.git
 cd csv-qa-app
 ```
 
-2. Install the required packages[Or install other dependency,if you got any errors for that]:
+2. Install the required packages[Or install other dependency manually,if you got any errors for that]:
 ```bash
 pip install -r requirements.txt
 ```
